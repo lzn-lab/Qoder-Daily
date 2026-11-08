@@ -139,145 +139,43 @@ jobs:
               -H "X-Admin-Token: $WB_ADMIN_TOKEN" "$WORKER_URL/wb/api/list" || echo "000")
             echo "第 $i 次请求: HTTP $code"
             if [ "$code" = "200" ]; then
-              if python3 -c "import json,datetime,sys; d=json.load(open('/tmp/wb.json')); t=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).strftime('%Y-%m-%d'); sys.exit(0 if name: Qoder Daily
-
-on:
-  # 定时已启用：UTC 02:20 = 北京时间 10:20（活动 10:00 开窗）
-  # cron 用 UTC，北京时间 = UTC+8
-  schedule:
-    - cron: "20 2 * * *"
-  workflow_dispatch:
-
-permissions:
-  contents: write
-
-concurrency:
-  group: Qoder-Daily
-  cancel-in-progress: false
-
-jobs:
-  run:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env:
-      TZ: Asia/Shanghai
-      QODER_CACHE_KEY: ${{ secrets.QODER_CACHE_KEY }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install deps
-        run: pip install -r requirements.txt
-
-      - name: Warn missing cache encryption key
-        if: ${{ env.QODER_CACHE_KEY == '' }}
-        run: |
-          echo "::warning::未设置 QODER_CACHE_KEY，本次将跳过 token 状态持久化；轮换后的 refresh_token 可能无法在下次运行恢复。"
-
-      - name: Restore encrypted token state
-        if: ${{ env.QODER_CACHE_KEY != '' }}
-        uses: actions/cache/restore@v4
-        with:
-          path: .qoder-cache/state.enc
-          key: qoder-state-v2-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: qoder-state-v2-
-
-      - name: Decrypt token state
-        if: ${{ env.QODER_CACHE_KEY != '' && hashFiles('.qoder-cache/state.enc') != '' }}
-        run: |
-          openssl enc -d -aes-256-cbc -pbkdf2 -salt -pass env:QODER_CACHE_KEY -in .qoder-cache/state.enc -out "$RUNNER_TEMP/qoder-state.tar"
-          tar -xf "$RUNNER_TEMP/qoder-state.tar" -C .
-          rm -f "$RUNNER_TEMP/qoder-state.tar"
-
-      - name: Run Qoder Daily
-        id: qoder
-        env:
-          QODER_TOKENS: ${{ secrets.QODER_TOKENS }}
-          QODER_GLOBAL_TOKENS: ${{ secrets.QODER_GLOBAL_TOKENS }}
-          QODER_MACHINE_TOKEN: ${{ secrets.QODER_MACHINE_TOKEN }}
-          QODER_MACHINE_CODE: ${{ secrets.QODER_MACHINE_CODE }}
-          QODER_MACHINE_TYPE: ${{ secrets.QODER_MACHINE_TYPE }}
-          QODERCN_RUNTIME_INFO: ${{ secrets.QODERCN_RUNTIME_INFO }}
-          QODER_RUNTIME_INFO: ${{ secrets.QODER_RUNTIME_INFO }}
-          QODER_UMID_PATH: ${{ secrets.QODER_UMID_PATH }}
-          QODER_UMID_NO_INSTALL: ${{ secrets.QODER_UMID_NO_INSTALL }}
-          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-          BARK_URL: ${{ secrets.BARK_URL }}
-          WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
-          DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
-          DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
-          QODER_WINDOW_RETRY: "1"
-          QODER_WINDOW_RETRY_MAX: "16"
-          QODER_WINDOW_RETRY_GAP: "90"
-        run: python qoder_daily.py
-
-      # Refresh may succeed before a later request fails; retain rotated tokens.
-      - name: Write Qoder status
-        if: ${{ always() }}
-        env:
-          QODER_OUTCOME: ${{ steps.qoder.outcome }}
-          RUN_ID: ${{ github.run_id }}
-          RUN_EVENT: ${{ github.event_name }}
-          REPO: ${{ github.repository }}
-        run: |
-          mkdir -p status
+              if python3 -c "import json,datetime,sys; d=json.load(open('/tmp/wb.json')); t=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).strftime('%Y-%m-%d'); sys.exit(0 if any(a.get('lastOkDate')==t for a in d.get('accounts',[])) else 1)"; then
+                echo "状态已包含今日签到"
+                reason=""
+                break
+              fi
+              reason="today-not-signed-yet"
+            else
+              reason="worker http $code"
+            fi
+            sleep 5
+          done
+          if [ ! -s /tmp/wb.json ] || ! python3 -c "import json; json.load(open('/tmp/wb.json'))" 2>/dev/null; then
+            echo '{"count":0,"accounts":[]}' > /tmp/wb.json
+          fi
+          export WB_ERROR="$reason"
           python3 -c "
           import json, datetime, os
-          d = {
-            'runId': int(os.environ['RUN_ID']),
-            'outcome': os.environ['QODER_OUTCOME'],
-            'event': os.environ['RUN_EVENT'],
-            'htmlUrl': 'https://github.com/' + os.environ['REPO'] + '/actions/runs/' + os.environ['RUN_ID'],
-            'finishedAt': datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).isoformat(timespec='seconds')
-          }
-          json.dump(d, open('status/qoder.json', 'w'), ensure_ascii=False, indent=2)
+          d = json.load(open('/tmp/wb.json'))
+          d['syncedAt'] = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).isoformat(timespec='seconds')
+          e = os.environ.get('WB_ERROR', '')
+          d.pop('error', None)
+          if e and not d.get('accounts'):
+              d['error'] = e
+          json.dump(d, open('status/workbuddy.json', 'w'), ensure_ascii=False, indent=2)
           "
-          echo "Qoder 状态文件已生成"
+          echo "状态文件已生成 (error=$reason)"
 
-      - name: Encrypt token state
-        if: ${{ always() && env.QODER_CACHE_KEY != '' }}
-        run: |
-          mkdir -p .qoder-cache
-          files=""
-          for f in qoder_tokens.json qoder_machine_id; do
-            if [ -f "$f" ]; then files="$files $f"; fi
-          done
-          if [ -n "$files" ]; then
-            tar -cf "$RUNNER_TEMP/qoder-state.tar" $files
-            openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:QODER_CACHE_KEY -in "$RUNNER_TEMP/qoder-state.tar" -out .qoder-cache/state.enc
-            rm -f "$RUNNER_TEMP/qoder-state.tar"
-          fi
-
-      - name: Save encrypted token state
-        if: ${{ always() && env.QODER_CACHE_KEY != '' && hashFiles('.qoder-cache/state.enc') != '' }}
-        uses: actions/cache/save@v4
-        with:
-          path: .qoder-cache/state.enc
-          key: qoder-state-v2-${{ github.run_id }}-${{ github.run_attempt }}
-
-      - name: Sync WorkBuddy status
+      - name: Commit status file
         if: ${{ always() }}
-        env:
-          WB_ADMIN_TOKEN: ${{ secrets.WB_ADMIN_TOKEN }}
-          WORKER_URL: ${{ secrets.WORKER_URL }}
         run: |
-          if [ -z "$WB_ADMIN_TOKEN" ] || [ -z "$WORKER_URL" ]; then
-            echo "::warning::未配置 WB_ADMIN_TOKEN / WORKER_URL，跳过状态同步"
+          if [ ! -f status/workbuddy.json ]; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f status/workbuddy.json
+          if git diff --staged --quiet; then
+            echo "状态无变化，跳过提交"
             exit 0
           fi
-          WORKER_URL="${WORKER_URL%/}"
-          echo "使用 Worker: $WORKER_URL"
-          mkdir -p status
-          rm -f /tmp/wb.json
-          reason="unknown"
-          for i in 1; do
-            code=$(curl -sS --max-time 25 -o /tmp/wb.json -w "%{http_code}" \
-              -H "X-Admin-Token: $WB_ADMIN_TOKEN" "$WORKER_URL/wb/api/list" || echo "000")
-            echo "第 $i 次请求: HTTP $code"
-            if [ "$code" = "200" ]; then
-              if python3 -c "import json,datetime,sys; d=json.load(open('/tmp/wb.json')); t=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).strftime('%Y-%m-%d'); sys.exit(0 if 
+          git commit -m "chore: sync workbuddy status"
+          git push
