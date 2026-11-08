@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: Qoder-Daily
@@ -96,3 +96,43 @@ jobs:
           path: .qoder-cache/state.enc
           key: qoder-state-v2-${{ github.run_id }}-${{ github.run_attempt }}
 
+      - name: Sync WorkBuddy status
+        if: ${{ always() }}
+        env:
+          WB_ADMIN_TOKEN: ${{ secrets.WB_ADMIN_TOKEN }}
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+        run: |
+          if [ -z "$WB_ADMIN_TOKEN" ] || [ -z "$WORKER_URL" ]; then
+            echo "::warning::未配置 WB_ADMIN_TOKEN / WORKER_URL，跳过状态同步"
+            exit 0
+          fi
+          mkdir -p status
+          rm -f /tmp/wb.json
+          for i in 1 2 3; do
+            if curl -fsS --max-time 25 -H "X-Admin-Token: $WB_ADMIN_TOKEN" "$WORKER_URL/wb/api/list" -o /tmp/wb.json; then
+              if python3 -c "import json,datetime,sys; d=json.load(open('/tmp/wb.json')); t=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).strftime('%Y-%m-%d'); sys.exit(0 if any(a.get('lastOkDate')==t for a in d.get('accounts',[])) else 1)"; then
+                echo "状态已包含今日签到"
+                break
+              fi
+            fi
+            sleep 40
+          done
+          if [ ! -s /tmp/wb.json ]; then
+            echo '{"count":0,"accounts":[],"error":"worker unreachable"}' > /tmp/wb.json
+          fi
+          python3 -c "import json,datetime; d=json.load(open('/tmp/wb.json')); d['syncedAt']=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).isoformat(timespec='seconds'); json.dump(d,open('status/workbuddy.json','w'),ensure_ascii=False,indent=2)"
+          echo "状态文件已生成"
+
+      - name: Commit status file
+        if: ${{ always() }}
+        run: |
+          if [ ! -f status/workbuddy.json ]; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f status/workbuddy.json
+          if git diff --staged --quiet; then
+            echo "状态无变化，跳过提交"
+            exit 0
+          fi
+          git commit -m "chore: sync workbuddy status"
+          git push
