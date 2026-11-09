@@ -277,6 +277,9 @@ RISK_CACHE = {}
 
 
 def machine_os():
+    override = _env("QODER_COSY_MACHINE_OS")
+    if override:
+        return override
     arch = platform.machine().lower()
     arch = "x86_64" if arch in ("amd64", "x86_64") else (
         "aarch64" if arch in ("arm64", "aarch64") else "unknown")
@@ -290,6 +293,9 @@ def machine_os():
 
 
 def machine_hostname():
+    override = _env("QODER_COSY_HOSTNAME")
+    if override:
+        return override
     raw = (os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "").strip()
     if not raw:
         return ""
@@ -307,6 +313,9 @@ def machine_hostname():
 
 
 def machine_id(account):
+    override = _env("QODER_COSY_MACHINE_ID")
+    if override:
+        return override
     device = first_text(account.get("device_id"))
     if device:
         return device
@@ -374,6 +383,9 @@ def resource_dirs(region, names):
 
 
 def client_version(region):
+    override = _env("QODER_COSY_VERSION")
+    if override:
+        return override
     for resources in resource_dirs(region, region_names(region)):
         try:
             with open(os.path.join(resources, "build-manifest.json"), encoding="utf-8") as handle:
@@ -620,6 +632,8 @@ def risky_sash_headers(account, uid=""):
     hostname = machine_hostname()
     if hostname:
         headers["Cosy-MachineHostname"] = hostname
+    if first_text(uid):
+        headers["Cosy-User-Id"] = first_text(uid)
     risk, note = risk_identity(region, uid)
     if risk:
         headers["Cosy-MachineToken"] = risk["machineToken"]
@@ -1145,9 +1159,12 @@ def pick_daily_campaign(rows):
 
 
 def claim_campaign(account, campaign_id):
-    headers = minimal_sash_headers(account["access"])
+    # 官方客户端的 claim 与 campaigns 列表使用同一套设备风控头。
+    # 只带最小四件套会被上游判为第三方渠道，回 409 INTERNAL_ERROR。
+    headers, _ = risky_sash_headers(account, account.get("uid", ""))
+    headers["content-type"] = "application/json"
     return request("POST", "%s%s/%s/claim" % (account["base"], CAMPAIGNS_PATH, campaign_id),
-                   headers=headers, body=None)
+                   headers=headers, body={})
 
 
 def do_checkin(account):
