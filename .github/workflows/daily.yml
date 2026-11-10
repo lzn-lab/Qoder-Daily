@@ -1,10 +1,13 @@
 name: Qoder Daily
 
 on:
-  # 定时已启用：UTC 02:20 = 北京时间 10:20（活动 10:00 开窗）
-  # cron 用 UTC，北京时间 = UTC+8
+  # GitHub 对 fork 仓库的 schedule 常延迟数小时，多条兜底；
+  # 任一条命中即可，签到幂等，重复运行不会重复加分。cron 用 UTC（北京 = UTC+8）。
   schedule:
-    - cron: "20 2 * * *"
+    - cron: "20 2 * * *"    # 北京 10:20
+    - cron: "20 4 * * *"    # 北京 12:20
+    - cron: "20 7 * * *"    # 北京 15:20
+    - cron: "20 10 * * *"   # 北京 18:20
   workflow_dispatch:
 
 permissions:
@@ -119,63 +122,29 @@ jobs:
           path: .qoder-cache/state.enc
           key: qoder-state-v2-${{ github.run_id }}-${{ github.run_attempt }}
 
-      - name: Sync WorkBuddy status
+      - name: Commit Qoder status
         if: ${{ always() }}
-        env:
-          WB_ADMIN_TOKEN: ${{ secrets.WB_ADMIN_TOKEN }}
-          WORKER_URL: ${{ secrets.WORKER_URL }}
+        continue-on-error: true
         run: |
-          if [ -z "$WB_ADMIN_TOKEN" ] || [ -z "$WORKER_URL" ]; then
-            echo "::warning::未配置 WB_ADMIN_TOKEN / WORKER_URL，跳过状态同步"
+          if [ ! -f status/qoder.json ]; then
+            echo "没有 Qoder 状态文件，跳过提交"
             exit 0
           fi
-          WORKER_URL="${WORKER_URL%/}"
-          echo "使用 Worker: $WORKER_URL"
-          mkdir -p status
-          rm -f /tmp/wb.json
-          reason="unknown"
-          for i in 1; do
-            code=$(curl -sS --max-time 25 -o /tmp/wb.json -w "%{http_code}" \
-              -H "X-Admin-Token: $WB_ADMIN_TOKEN" "$WORKER_URL/wb/api/list" || echo "000")
-            echo "第 $i 次请求: HTTP $code"
-            if [ "$code" = "200" ]; then
-              if python3 -c "import json,datetime,sys; d=json.load(open('/tmp/wb.json')); t=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).strftime('%Y-%m-%d'); sys.exit(0 if any(a.get('lastOkDate')==t for a in d.get('accounts',[])) else 1)"; then
-                echo "状态已包含今日签到"
-                reason=""
-                break
-              fi
-              reason="today-not-signed-yet"
-            else
-              reason="worker http $code"
-            fi
-            sleep 5
-          done
-          if [ ! -s /tmp/wb.json ] || ! python3 -c "import json; json.load(open('/tmp/wb.json'))" 2>/dev/null; then
-            echo '{"count":0,"accounts":[]}' > /tmp/wb.json
-          fi
-          export WB_ERROR="$reason"
-          python3 -c "
-          import json, datetime, os
-          d = json.load(open('/tmp/wb.json'))
-          d['syncedAt'] = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).isoformat(timespec='seconds')
-          e = os.environ.get('WB_ERROR', '')
-          d.pop('error', None)
-          if e and not d.get('accounts'):
-              d['error'] = e
-          json.dump(d, open('status/workbuddy.json', 'w'), ensure_ascii=False, indent=2)
-          "
-          echo "状态文件已生成 (error=$reason)"
-
-      - name: Commit status file
-        if: ${{ always() }}
-        run: |
-          if [ ! -f status/workbuddy.json ]; then exit 0; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f status/workbuddy.json
+          git add -f status/qoder.json
           if git diff --staged --quiet; then
             echo "状态无变化，跳过提交"
             exit 0
           fi
-          git commit -m "chore: sync workbuddy status"
-          git push
+          git commit -m "chore: sync qoder status"
+          for i in 1 2 3; do
+            if git push; then
+              echo "状态已推送"
+              exit 0
+            fi
+            echo "push 冲突，rebase 后重试 ($i/3)"
+            git fetch origin main || break
+            git rebase origin/main || { git rebase --abort; break; }
+          done
+          echo "::warning::状态文件推送失败，不影响签到结果"
