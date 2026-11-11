@@ -1,13 +1,19 @@
 name: Qoder Daily
 
 on:
-  # GitHub 对 fork 仓库的 schedule 常延迟数小时，多条兜底；
-  # 任一条命中即可，签到幂等，重复运行不会重复加分。cron 用 UTC（北京 = UTC+8）。
+  # 密集尝试：实际希望落在北京 10:30 / 11:00 / 11:30 ... 每半小时一次。
+  # 实测 GitHub 对本仓库 schedule 整体平移约 +8h（设 02:20 实际 09:55），
+  # 故下列时间统一提前 8h 设定；最后一两条是不补偿的保险与晚间兜底。
+  # cron 一律 UTC（北京 = UTC+8）。签到幂等，一天多次只会计一次 100。
   schedule:
-    - cron: "20 2 * * *"    # 北京 10:20
-    - cron: "20 4 * * *"    # 北京 12:20
-    - cron: "20 7 * * *"    # 北京 15:20
-    - cron: "20 10 * * *"   # 北京 18:20
+    - cron: "30 18 * * *"   # 延迟后 ≈ 北京 10:30（不延迟则 02:30）
+    - cron: "0 19 * * *"    # 延迟后 ≈ 北京 11:00
+    - cron: "30 19 * * *"   # 延迟后 ≈ 北京 11:30
+    - cron: "0 20 * * *"    # 延迟后 ≈ 北京 12:00
+    - cron: "30 20 * * *"   # 延迟后 ≈ 北京 12:30
+    - cron: "0 21 * * *"    # 延迟后 ≈ 北京 13:00
+    - cron: "20 23 * * *"   # 延迟后 ≈ 北京 15:20，晚间兜底
+    - cron: "20 2 * * *"    # 不延迟时正好北京 10:20；延迟后 ≈ 18:20
   workflow_dispatch:
 
 permissions:
@@ -138,13 +144,4 @@ jobs:
             exit 0
           fi
           git commit -m "chore: sync qoder status"
-          for i in 1 2 3; do
-            if git push; then
-              echo "状态已推送"
-              exit 0
-            fi
-            echo "push 冲突，rebase 后重试 ($i/3)"
-            git fetch origin main || break
-            git rebase origin/main || { git rebase --abort; break; }
-          done
-          echo "::warning::状态文件推送失败，不影响签到结果"
+      
